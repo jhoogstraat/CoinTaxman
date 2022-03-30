@@ -70,6 +70,7 @@ BASE_PATH = Path(__file__).parent.parent.absolute()
 ACCOUNT_STATMENTS_PATH = Path(BASE_PATH, "account_statements")
 DATA_PATH = Path(BASE_PATH, "data")
 EXPORT_PATH = Path(BASE_PATH, "export")
+WD_MATCHING_PATH = Path(BASE_PATH, "withdrawals_deposits")
 TMP_LOG_FILEPATH = Path(EXPORT_PATH, "tmp.log")
 
 # Class for simplified casefold string comparison with configured fiat currency
@@ -85,3 +86,4 @@ class Fiat(str):
 
 
 FIAT = Fiat(FIAT_CLASS.name)
+

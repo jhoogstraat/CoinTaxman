@@ -1241,6 +1241,31 @@ class Book:
                     overwrite=True,
                 )
 
+    def resolve_deposits(self) -> bool:
+        """ Matches withdrawals and deposits
+
+        Returns:
+            bool: Return True if everything went as expected.
+        """
+        paths = self.get_file_paths(config.WD_MATCHING_PATH)
+
+        if not paths:
+            log.warning(
+                "No matching files for withdrawals/deposits located in %s.",
+                config.WD_MATCHING_PATH,
+            )
+            return False
+
+        for file_path in paths:
+            #TODO match withdrawals/deposits
+            pass
+
+        if not bool(self):
+            log.warning("Unable to import any data.")
+            return False
+
+        return True
+
     def read_file(self, file_path: Path) -> None:
         """Import transactions form an account statement.
 
@@ -1271,20 +1296,20 @@ class Book:
                 "Skipping file."
             )
 
-    def get_account_statement_paths(self, statements_dir: Path) -> list[Path]:
-        """Return file paths of all account statements in `statements_dir`.
+    def get_file_paths(self, folder_dir: Path) -> list[Path]:
+        """Return file paths of all input files in `folder_dir`.
+        For example, this function can return all account statement file paths.
 
         Args:
-            statements_dir (str): Folder in which account statements
-                                  will be searched.
+            folder_dir (str): Folder in input files will be searched.
 
         Returns:
-            list[Path]: List of account statement file paths.
+            list[Path]: List of input file paths.
         """
         file_paths: list[Path] = []
 
-        if statements_dir.is_dir():
-            for file_path in statements_dir.iterdir():
+        if folder_dir.is_dir():
+            for file_path in folder_dir.iterdir():
                 # Ignore .gitkeep and temporary excel files.
                 filename = file_path.stem
                 if filename == ".gitkeep" or filename.startswith("~$"):
@@ -1299,7 +1324,7 @@ class Book:
         Returns:
             bool: Return True if everything went as expected.
         """
-        paths = self.get_account_statement_paths(config.ACCOUNT_STATMENTS_PATH)
+        paths = self.get_file_paths(config.ACCOUNT_STATMENTS_PATH)
 
         if not paths:
             log.warning(
