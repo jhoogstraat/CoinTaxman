@@ -25,11 +25,20 @@ import core
 
 config = configparser.ConfigParser()
 config.read("config.ini")
-COUNTRY = core.Country[config["BASE"].get("COUNTRY", "GERMANY")]
+
+try:
+    COUNTRY = core.Country[config["BASE"].get("COUNTRY", "GERMANY")]
+except KeyError as e:
+    raise NotImplementedError(
+        f"Your country {e} is currently not supported. " "Please create an Issue or PR."
+    )
+
 TAX_YEAR = int(config["BASE"].get("TAX_YEAR", "2021"))
 MEAN_MISSING_PRICES = config["BASE"].getboolean("MEAN_MISSING_PRICES")
 CALCULATE_VIRTUAL_SELL = config["BASE"].getboolean("CALCULATE_VIRTUAL_SELL")
 MULTI_DEPOT = config["BASE"].getboolean("MULTI_DEPOT")
+EXPORT_VIRTUAL_SELL = config["BASE"].getboolean("EXPORT_VIRTUAL_SELL")
+EXPORT_ALL_EVENTS = config["BASE"].getboolean("EXPORT_ALL_EVENTS")
 
 # Read in environmental variables.
 if _env_country := environ.get("COUNTRY"):
@@ -50,9 +59,11 @@ if COUNTRY == core.Country.GERMANY:
     def IS_LONG_TERM(buy: datetime, sell: datetime) -> bool:
         return buy + relativedelta(years=1) < sell
 
-
 else:
-    raise NotImplementedError(f"Your country {COUNTRY} is not supported.")
+    raise NotImplementedError(
+        f"Your country {COUNTRY} is currently not supported. "
+        "Please create an Issue or PR."
+    )
 
 # Program specific constants.
 BASE_PATH = Path(__file__).parent.parent.absolute()
@@ -60,4 +71,17 @@ ACCOUNT_STATMENTS_PATH = Path(BASE_PATH, "account_statements")
 DATA_PATH = Path(BASE_PATH, "data")
 EXPORT_PATH = Path(BASE_PATH, "export")
 TMP_LOG_FILEPATH = Path(EXPORT_PATH, "tmp.log")
-FIAT = FIAT_CLASS.name  # Convert to string.
+
+# Class for simplified casefold string comparison with configured fiat currency
+class Fiat(str):
+    def __init__(self, name):
+        self.name = name
+
+    def __eq__(self, fiat):
+        if isinstance(fiat, str):
+            return self.name.casefold() == fiat.casefold()
+        else:
+            raise TypeError(f"Unsupported operand for ==: {type(fiat)}")
+
+
+FIAT = Fiat(FIAT_CLASS.name)

@@ -980,7 +980,7 @@ class Book:
                 elif operation in ["Buy", "Sell"]:
                     if asset_price_currency != config.FIAT:
                         log.error(
-                            f"Only {config.FIAT.upper()} is supported as "
+                            f"Only {config.FIAT} is supported as "
                             "'Asset market price currency', since price fetching for "
                             "fiat currencies is not fully implemented yet."
                         )
@@ -989,7 +989,7 @@ class Book:
                     change_fiat = misc.force_decimal(amount_fiat)
                     # Save price in our local database for later.
                     price = misc.force_decimal(asset_price)
-                    set_price_db(platform, asset, config.FIAT.upper(), utc_time, price)
+                    set_price_db(platform, asset, config.FIAT, utc_time, price)
 
                 if change < 0:
                     log.error(
@@ -1009,7 +1009,7 @@ class Book:
                         utc_time,
                         platform,
                         change_fiat,
-                        config.FIAT.upper(),
+                        config.FIAT,
                         row,
                         file_path,
                     )
@@ -1019,7 +1019,7 @@ class Book:
                         utc_time,
                         platform,
                         change_fiat,
-                        config.FIAT.upper(),
+                        config.FIAT,
                         row,
                         file_path,
                     )
