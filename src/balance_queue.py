@@ -138,17 +138,18 @@ class BalanceQueue(abc.ABC):
         assert change >= 0
         return sold_coins, change
 
-    def remove_fee(self, fee: decimal.Decimal) -> None:
+    def remove_fee(self, fee: decimal.Decimal) -> list[transaction.SoldCoin]:
         """Remove fee from the last added transaction.
 
         Args:
             fee: decimal.Decimal
         """
-        _, left_over_fee = self.sell(fee)
+        sold_coins, left_over_fee = self.sell(fee)
         if left_over_fee:
             # Not enough coins in queue to remove fee.
             # Buffer the fee for next time.
             self.buffer_fee += left_over_fee
+        return sold_coins
 
 
 class BalanceFIFOQueue(BalanceQueue):

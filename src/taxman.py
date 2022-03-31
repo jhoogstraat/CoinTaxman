@@ -26,11 +26,13 @@ import core
 import log_config
 import misc
 import transaction
-from book import Book
+from book import Book, DepositMatch
 from price_data import PriceData
 
 log = log_config.getLogger(__name__)
 
+# Dict[Platform: list[Operation: SoldCoinsByOperation]]
+BalancedOps = dict[str, list[tuple[transaction.Operation, Optional[list[transaction.SoldCoin]]]]]
 
 class Taxman:
     def __init__(self, book: Book, price_data: PriceData) -> None:
@@ -67,43 +69,14 @@ class Taxman:
     def _evaluate_taxation_GERMANY(
         self,
         coin: str,
-        operations: list[transaction.Operation],
+        sell_operations: list[tuple[transaction.Operation, Optional[transaction.SoldCoin]]],
     ) -> None:
-        balance = self.BalanceType()
 
         def evaluate_sell(
             op: transaction.Operation,
+            sold_coins: list[transaction.SoldCoin],
         ) -> Optional[list[transaction.TaxEvent]]:
-            # Remove coins from queue.
-            sold_coins, unsold_coins = balance.sell(op.change)
             tx_list = []
-
-            if coin == config.FIAT:
-                # Not taxable.
-                return None
-
-            if unsold_coins:
-                # Queue ran out of items to sell and not all coins
-                # could be sold.
-                log.error(
-                    f"{op.file_path.name}: Line {op.line}: "
-                    f"Not enough {coin} in queue to sell: "
-                    f"missing {unsold_coins} {coin} "
-                    f"(transaction from {op.utc_time} "
-                    f"on {op.platform})\n"
-                    "\tThis error occurs if your account statements "
-                    "have unmatched buy/sell positions.\n"
-                    "\tHave you added all your account statements "
-                    "of the last years?\n"
-                    "\tThis error may also occur after deposits "
-                    "from unknown sources.\n"
-                )
-                raise RuntimeError
-
-            if not self.in_tax_year(op):
-                # Sell is only taxable in the respective year.
-                return None
-
             taxation_type = "Sonstige Einkünfte"
             # Price of the sell.
             sell_value = self.price_data.get_cost(op)
@@ -174,10 +147,9 @@ class Taxman:
                 )
             return tx_list
 
-        for op in operations:
+        for op, sold_coins in sell_operations:
             tx: Union[transaction.TaxEvent, list, None] = None
             if isinstance(op, transaction.Fee):
-                balance.remove_fee(op.change)
                 # fees reduce taxed gain in the corresponding tax period
                 is_taxable = self.in_tax_year(op)
                 taxation_type = "Sonstige Einkünfte"
@@ -198,7 +170,6 @@ class Taxman:
                 taxation_type = "Krypto-Staking Ende"
                 tx = transaction.TaxEvent(taxation_type, decimal.Decimal(), op, False)
             elif isinstance(op, transaction.Buy):
-                balance.put(op)
                 if op.coin == config.FIAT:
                     continue
                 else:
@@ -215,7 +186,7 @@ class Taxman:
             elif isinstance(op, transaction.Sell):
                 if op.coin == config.FIAT:
                     continue
-                if (tx := evaluate_sell(op)) is None:
+                if (tx := evaluate_sell(op, sold_coins)) is None:
                     if self.in_tax_year(op):
                         taxation_type = "Verkauf (nicht steuerbar)"
                     else:
@@ -226,7 +197,6 @@ class Taxman:
             elif isinstance(
                 op, (transaction.CoinLendInterest, transaction.StakingInterest)
             ):
-                balance.put(op)
                 is_taxable = self.in_tax_year(op)
                 if misc.is_fiat(coin):
                     taxation_type = "Einkünfte aus Kapitalvermögen"
@@ -243,14 +213,12 @@ class Taxman:
                 taxed_gain = self.price_data.get_cost(op)
                 tx = transaction.TaxEvent(taxation_type, taxed_gain, op, is_taxable)
             elif isinstance(op, transaction.Airdrop):
-                balance.put(op)
                 taxation_type = "Airdrop"
                 real_gain = self.price_data.get_cost(op)
                 tx = transaction.TaxEvent(
                     taxation_type, decimal.Decimal(), op, False, real_gain=real_gain
                 )
             elif isinstance(op, transaction.Commission):
-                balance.put(op)
                 is_taxable = self.in_tax_year(op)
                 taxation_type = "Einkünfte aus sonstigen Leistungen"
                 if not is_taxable:
@@ -258,12 +226,9 @@ class Taxman:
                 taxed_gain = self.price_data.get_cost(op)
                 tx = transaction.TaxEvent(taxation_type, taxed_gain, op, is_taxable)
             elif isinstance(op, transaction.Deposit):
-                if coin != config.FIAT:
-                    log.warning(
-                        f"Unresolved deposit of {op.change} {coin} "
-                        f"on {op.platform} at {op.utc_time}. "
-                        "The evaluation might be wrong."
-                    )
+                if op.coin == config.FIAT:
+                    continue
+                
                 taxation_type = "Einzahlung"
                 tx = transaction.TaxEvent(taxation_type, decimal.Decimal(), op, False)
             elif isinstance(op, transaction.Withdrawal):
@@ -288,63 +253,153 @@ class Taxman:
             else:
                 raise TypeError
 
-        # Check that all relevant positions were considered.
-        if balance.buffer_fee:
-            log.warning(
-                "Balance has outstanding fees which were not considered: "
-                f"{balance.buffer_fee} {coin}"
-            )
-
         # Calculate the amount of coins which should be left on the platform
         # and evaluate the (taxed) gain, if the coin would be sold right now.
-        if config.CALCULATE_VIRTUAL_SELL and (
-            (left_coin := sum(((bop.op.change - bop.sold) for bop in balance.queue)))
-            and self.price_data.get_cost(op)
-        ):
-            assert isinstance(left_coin, decimal.Decimal)
-            virtual_sell = transaction.Sell(
-                datetime.datetime.now().astimezone(),
-                op.platform,
-                left_coin,
-                coin,
-                -1,
-                Path(""),
-            )
-            if tx_ := evaluate_sell(virtual_sell):
-                if isinstance(tx_, list):
-                    self.tax_events.extend(tx_)
-                elif isinstance(tx_, transaction.TaxEvent):
-                    self.tax_events.append(tx_)
-                else:
-                    raise TypeError
+        # if config.CALCULATE_VIRTUAL_SELL and (
+        #     (left_coin := sum(((bop.op.change - bop.sold) for bop in balance.queue)))
+        #     and self.price_data.get_cost(sop)
+        # ):
+        #     assert isinstance(left_coin, decimal.Decimal)
+        #     virtual_sell = transaction.Sell(
+        #         datetime.datetime.now().astimezone(),
+        #         sop.platform,
+        #         left_coin,
+        #         coin,
+        #         -1,
+        #         Path(""),
+        #     )
+        #     if tx_ := evaluate_sell(virtual_sell):
+        #         if isinstance(tx_, list):
+        #             self.tax_events.extend(tx_)
+        #         elif isinstance(tx_, transaction.TaxEvent):
+        #             self.tax_events.append(tx_)
+        #         else:
+        #             raise TypeError
 
-    def _evaluate_taxation_per_coin(
+    def _balance_coin(
         self,
-        operations: list[transaction.Operation],
-    ) -> None:
-        """Evaluate the taxation for a list of operations per coin using
-        country specific functions.
+        coin: str,
+        operations: list[transaction.Operation]
+    ) -> BalancedOps:
+        platform_ops = misc.group_by(operations, "platform")
+        platform_balance: dict[str, self.BalanceType] = { platform: self.BalanceType() for platform in platform_ops.keys() }
 
-        Args:
-            operations (list[transaction.Operation])
-        """
-        for coin, coin_operations in misc.group_by(operations, "coin").items():
-            coin_operations = transaction.sort_operations(coin_operations, ["utc_time"])
-            self.__evaluate_taxation(coin, coin_operations)
+        # Result
+        platform_balanced_ops: BalancedOps = { platform: [] for platform in platform_ops.keys() }
 
+        # Loop state
+        op_iterators = { platform: iter(ops) for platform, ops in platform_ops.items() }
+        current_platform: Optional[str] = list(op_iterators.keys())[0]
+        withdrawals: list[tuple[transaction.Operation, transaction.SoldCoin]] = []
+
+        def evaluate_sell(op: transaction.Operation, balance: self.BalanceType) -> list[transaction.SoldCoin]:
+            sold_coins, unsold_coins = balance.sell(op.change)
+            if unsold_coins:
+                # Queue ran out of items to sell and not all coins
+                # could be sold.
+                log.error(
+                    f"{op.file_path.name}: Line {op.line}: "
+                    f"Not enough {coin} in queue to sell: "
+                    f"missing {unsold_coins} {coin} "
+                    f"(transaction from {op.utc_time} "
+                    f"on {op.platform})\n"
+                    "\tThis error occurs if your account statements "
+                    "have unmatched buy/sell positions.\n"
+                    "\tHave you added all your account statements "
+                    "of the last years?\n"
+                    "\tThis error may also occur after deposits "
+                    "from unknown sources.\n"
+                )
+                raise RuntimeError
+            return sold_coins
+
+        while current_platform:
+            try:
+                op = next(op_iterators[current_platform])
+            except StopIteration:
+                op_iterators.pop(current_platform)
+                current_platform = list(op_iterators.keys())[0] if len(op_iterators) > 0 else None
+                continue
+
+            balance = platform_balance[op.platform]
+
+            sold_coins: Optional[list[transaction.SoldCoin]] = None
+
+            if isinstance(op, transaction.Fee):
+                sold_coins = balance.remove_fee(op.change)
+            elif isinstance(op, transaction.CoinLend):
+                pass
+            elif isinstance(op, transaction.CoinLendEnd):
+                pass
+            elif isinstance(op, transaction.Staking):
+                pass
+            elif isinstance(op, transaction.StakingEnd):
+                pass
+            elif isinstance(op, transaction.Buy):
+                balance.put(op)
+            elif isinstance(op, transaction.Sell):
+                sold_coins = evaluate_sell(op, balance)
+            elif isinstance(
+                op, (transaction.CoinLendInterest, transaction.StakingInterest)
+            ):
+                balance.put(op)
+            elif isinstance(op, transaction.Airdrop):
+                balance.put(op)
+            elif isinstance(op, transaction.Commission):
+                balance.put(op)
+            elif isinstance(op, transaction.Deposit):
+                log.debug("DEPOSIT")
+                balance.put(op)
+            elif isinstance(op, transaction.Withdrawal):
+                sold_coins = evaluate_sell(op, balance)
+                withdrawals.append((op, sold_coins))
+            else:
+                raise NotImplementedError
+
+            platform_balanced_ops[current_platform].append((op, sold_coins))
+
+        # Check that all relevant positions were considered.
+        for platform, balance in platform_balance.items():
+            if balance.buffer_fee:
+                log.warning(
+                    f"Balance on platform {platform} has outstanding fees which were not considered: "
+                    f"{balance.buffer_fee} {coin}"
+                )
+
+        def findWithdrawnCoins(op: transaction.Operation) -> Optional[transaction.SoldCoin]:
+            match = next(match for match in self.book.depositMatches if match.dest_platform == op.platform and match.dest_utc_time == op.utc_time and match.change == op.change)
+            return next((sold_coins for op, sold_coins in withdrawals if op.platform == match.source_platform and op.utc_time == match.source_utc_time and op.change == match.change), None)
+
+        log.debug("Filling in Deposits")
+        for platform, ops in platform_balanced_ops.items():
+            log.debug(platform)
+            for bop in ops:
+                log.debug(type(bop[0]))
+                if isinstance(bop[0], transaction.Deposit):
+                    log.debug("Found deposit")
+                    log.debug(bop)
+                    bop[1] = findWithdrawnCoins(bop[0])
+                    log.debug("YESS")
+                    log.debug(bop[1])
+
+        return platform_balanced_ops
+    
     def evaluate_taxation(self) -> None:
         """Evaluate the taxation using country specific function."""
         log.debug("Starting evaluation...")
 
-        if config.MULTI_DEPOT:
-            # Evaluate taxation separated by platforms and coins.
-            for _, operations in misc.group_by(
-                self.book.operations, "platform"
-            ).items():
-                self._evaluate_taxation_per_coin(operations)
-        else:
-            # Evaluate taxation separated by coins in a single virtual depot.
-            self._evaluate_taxation_per_coin(self.book.operations)
+        for coin, coin_operations in misc.group_by(self.book.operations, "coin").items():
+            if coin == "EOS":
+                coin_operations = transaction.sort_operations(coin_operations, ["utc_time"])
+                platform_balanced_ops = self._balance_coin(coin, coin_operations)
+            else:
+                continue
+            if config.MULTI_DEPOT:
+                self.__evaluate_taxation(coin, platform_balanced_ops)
+            else:
+                # Evaluate taxation separated by coins in a single virtual depot.
+                consolidated_ops = [op for ops in platform_balanced_ops.values() for op in ops]
+                self.__evaluate_taxation(coin, { "virtual" : consolidated_ops })
 
     def print_evaluation(self) -> None:
         """Print short summary of evaluation to stdout."""

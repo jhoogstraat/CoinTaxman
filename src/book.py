@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import csv
+import dataclasses
 import datetime
 import decimal
 import re
@@ -32,6 +33,15 @@ from price_data import PriceData
 
 log = log_config.getLogger(__name__)
 
+@dataclasses.dataclass
+class DepositMatch:
+    source_platform: str
+    source_utc_time: datetime.datetime
+    dest_platform: str
+    dest_utc_time: datetime.datetime
+    change: decimal.Decimal
+    coin: str
+    line: int
 
 class Book:
     # Need to track state of duplicate deposit/withdrawal entries
@@ -45,6 +55,7 @@ class Book:
         self.price_data = price_data
 
         self.operations: list[tr.Operation] = []
+        self.depositMatches: list[DepositMatch] = []
 
     def __bool__(self) -> bool:
         return bool(self.operations)
@@ -1257,12 +1268,33 @@ class Book:
             return False
 
         for file_path in paths:
-            #TODO match withdrawals/deposits
-            pass
+            with open(file_path, encoding="utf8") as f:
+                reader = csv.reader(f)
+                line = next(reader)
 
-        if not bool(self):
-            log.warning("Unable to import any data.")
-            return False
+                if line == ["source_platform", "source_utc_time", "dest_platform", "dest_utc_time", "change", "coin"]:
+                    log.info(f"Reading deposit/withdrawal configurations from {file_path}")
+                else:
+                    log.error(
+                        f"Deposit/Withdrawal configuration header is not correct in {file_path}"
+                    )
+                    raise RuntimeError
+
+                for (
+                    source_platform,
+                    csv_source_utc_time,
+                    dest_platform,
+                    csv_dest_utc_time,
+                    csv_change,
+                    coin
+                ) in reader:
+                    row = reader.line_num
+
+                    source_utc_time = datetime.datetime.fromisoformat(csv_source_utc_time)
+                    dest_utc_time = datetime.datetime.fromisoformat(csv_dest_utc_time)
+                    change = misc.force_decimal(csv_change)
+
+                    self.depositMatches.append(DepositMatch(source_platform, source_utc_time, dest_platform, dest_utc_time, change, coin, row))
 
         return True
 
